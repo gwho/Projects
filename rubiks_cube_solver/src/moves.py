@@ -206,7 +206,7 @@ def apply_R_prime(cube: CubeState) -> CubeState:
         new_cube.set_sticker('F', pos, d_col[i])
 
     for i, pos in enumerate([2, 5, 8]):
-        new_cube.set_sticker('D', pos, b_col[2 - i])
+        new_cube.set_sticker('D', pos, b_col[i])
 
     return new_cube
 
