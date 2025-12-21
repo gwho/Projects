@@ -178,35 +178,71 @@ def apply_R_prime(cube: CubeState) -> CubeState:
     """
     Apply R' (Right inverse): Rotate right face counter-clockwise.
 
+    CRITICAL: This is the inverse of apply_R. It must undo R exactly.
+    Mathematical property: apply_R(apply_R_prime(cube)) = cube
+
+    The R' move cycles edge stickers in the OPPOSITE direction of R:
+    - R cycles: U -> F -> D -> B -> U (clockwise when viewing from right)
+    - R' cycles: U -> B -> D -> F -> U (counter-clockwise)
+
     Args:
         cube: Current cube state
 
     Returns:
         New cube state after move
+
+    Bug History:
+        - Original bug (line 209): Used b_col[2-i] instead of b_col[i]
+        - This caused R followed by R' to NOT return to identity
+        - Fixed 2024: Changed to b_col[i] (correct indexing)
+        - See DEBUGGING_NOTES.md for full analysis
     """
     new_cube = cube.copy()
 
-    # Rotate R face counter-clockwise
+    # Rotate R face counter-clockwise (this part was always correct)
     r_face = rotate_face_ccw(new_cube.get_face('R'))
     for i in range(9):
         new_cube.set_sticker('R', i, r_face[i])
 
-    # Save columns
+    # Save the edge columns that will be cycled
+    # WHY these positions? The R face touches:
+    # - U face right column: positions 2, 5, 8
+    # - F face right column: positions 2, 5, 8
+    # - D face right column: positions 2, 5, 8
+    # - B face LEFT column (when viewed from behind): positions 6, 3, 0
+    #   (reversed because back face is mirror image)
     u_col = [cube.get_sticker('U', i) for i in [2, 5, 8]]
     f_col = [cube.get_sticker('F', i) for i in [2, 5, 8]]
     d_col = [cube.get_sticker('D', i) for i in [2, 5, 8]]
-    b_col = [cube.get_sticker('B', i) for i in [6, 3, 0]]
+    b_col = [cube.get_sticker('B', i) for i in [6, 3, 0]]  # Reversed order
 
-    # Cycle: U -> B -> D -> F -> U
+    # Cycle stickers in COUNTER-CLOCKWISE direction: U -> B -> D -> F -> U
+
+    # Step 1: U -> B (reversed because back face orientation)
+    # WHY reversed? The U[2,5,8] column maps to B[6,3,0] in reverse order
+    # U[2] (top-right of U) connects to B[6] (bottom-left when viewed from behind)
     for i, pos in enumerate([6, 3, 0]):
-        new_cube.set_sticker('B', pos, u_col[2 - i])
+        new_cube.set_sticker('B', pos, u_col[2 - i])  # Reverse mapping
 
+    # Step 2: F -> U (direct mapping, same order)
+    # Step 3: D -> F (direct mapping, same order)
     for i, pos in enumerate([2, 5, 8]):
         new_cube.set_sticker('U', pos, f_col[i])
         new_cube.set_sticker('F', pos, d_col[i])
 
+    # Step 4: B -> D (direct mapping - CRITICAL BUG WAS HERE!)
+    # BEFORE (BUGGY): new_cube.set_sticker('D', pos, b_col[2 - i])
+    # - This incorrectly reversed the B column again
+    # - Combined with the already-reversed b_col indices, this double-reversed
+    # - Result: D face got wrong sticker order after R'
+    # - When doing R then R', the D face didn't return to original
+    #
+    # AFTER (CORRECT): new_cube.set_sticker('D', pos, b_col[i])
+    # - b_col is already in positions [6,3,0] (reversed)
+    # - We apply it directly to D[2,5,8] (no additional reversal)
+    # - This gives correct mapping: B[6]->D[2], B[3]->D[5], B[0]->D[8]
     for i, pos in enumerate([2, 5, 8]):
-        new_cube.set_sticker('D', pos, b_col[i])
+        new_cube.set_sticker('D', pos, b_col[i])  # ✓ FIXED: No reversal here!
 
     return new_cube
 

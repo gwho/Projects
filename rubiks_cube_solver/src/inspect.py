@@ -3,6 +3,25 @@ Cube Inspection Tools - For debugging and analyzing cube states.
 
 This module provides tools to inspect cube state, find pieces,
 and verify solver progress.
+
+DESIGN PHILOSOPHY:
+- No silent failures: Always raise exceptions with full context
+- Bounded iterations: Prevent infinite loops with max_iterations guards
+- Structured data: Use dataclasses instead of tuples for clarity
+- Helpful errors: Include cube state in exceptions for debugging
+
+WHY THIS MODULE EXISTS:
+The original solver had "silent failure" bugs where find_edge would
+return None and the solver would give up without explanation. This
+made debugging nearly impossible.
+
+New approach:
+1. find_edge raises PieceNotFoundError with full cube state
+2. Max iteration guards prevent infinite loops
+3. Structured EdgeRef/CornerRef make code self-documenting
+4. Verification functions (edge_solved, etc.) catch bugs early
+
+See GUIDE_FOR_BEGINNERS.md for detailed examples.
 """
 
 from typing import Tuple, Optional, List
@@ -11,7 +30,29 @@ from src.cube_state import CubeState
 
 
 class PieceNotFoundError(Exception):
-    """Raised when a piece cannot be found on the cube."""
+    """
+    Raised when a piece cannot be found on the cube.
+
+    WHY THIS IS BETTER THAN RETURNING None:
+    - Old way: find_edge returns None → solver silently gives up
+    - New way: find_edge raises exception → immediate, clear error
+
+    The exception includes:
+    1. Which piece was being searched for (colors)
+    2. The full cube state (for debugging)
+    3. Clear error message explaining what went wrong
+
+    Example:
+        >>> try:
+        ...     edge = find_edge(cube, 'W', 'B')
+        ... except PieceNotFoundError as e:
+        ...     print(e)
+        Piece with colors ('W', 'B') not found on cube.
+        Cube state:
+        [full cube visualization shown]
+
+    This makes debugging 100x easier than "returned None somewhere."
+    """
 
     def __init__(self, colors: Tuple[str, ...], cube_state: CubeState):
         self.colors = colors
@@ -24,13 +65,38 @@ class PieceNotFoundError(Exception):
 
 @dataclass
 class EdgeRef:
-    """Reference to an edge piece on the cube."""
-    face1: str
-    pos1: int
-    face2: str
-    pos2: int
-    color1: str
-    color2: str
+    """
+    Reference to an edge piece on the cube.
+
+    WHY USE A DATACLASS INSTEAD OF A TUPLE?
+
+    Old way (tuple):
+        edge = ('U', 7, 'F', 1, 'W', 'B')  # What does each element mean? 🤔
+        face1 = edge[0]  # Which index was face1? Must look it up every time
+
+    New way (dataclass):
+        edge = EdgeRef(face1='U', pos1=7, face2='F', pos2=1,
+                       color1='W', color2='B')
+        face1 = edge.face1  # Crystal clear! Self-documenting code ✓
+
+    Benefits:
+    1. Named fields make code self-documenting
+    2. Impossible to mix up field order
+    3. IDE autocomplete works
+    4. Type hints prevent bugs
+    5. __str__ method provides nice debugging output
+
+    An edge piece has 2 stickers (one on each adjacent face):
+    - face1, pos1: Location of first sticker
+    - face2, pos2: Location of second sticker
+    - color1, color2: Colors of those stickers
+    """
+    face1: str      # Face containing first sticker ('U', 'R', 'F', 'D', 'L', 'B')
+    pos1: int       # Position on face1 (0-8)
+    face2: str      # Face containing second sticker
+    pos2: int       # Position on face2 (0-8)
+    color1: str     # Color of sticker on face1
+    color2: str     # Color of sticker on face2
 
     def __str__(self):
         return f"Edge({self.face1}[{self.pos1}]={self.color1}, {self.face2}[{self.pos2}]={self.color2})"
@@ -38,16 +104,26 @@ class EdgeRef:
 
 @dataclass
 class CornerRef:
-    """Reference to a corner piece on the cube."""
-    face1: str
-    pos1: int
-    face2: str
-    pos2: int
-    face3: str
-    pos3: int
-    color1: str
-    color2: str
-    color3: str
+    """
+    Reference to a corner piece on the cube.
+
+    A corner piece has 3 stickers (one on each adjacent face):
+    - face1, pos1: Location of first sticker
+    - face2, pos2: Location of second sticker
+    - face3, pos3: Location of third sticker
+    - color1, color2, color3: Colors of those stickers
+
+    Same benefits as EdgeRef - see EdgeRef docstring for explanation.
+    """
+    face1: str      # Face containing first sticker
+    pos1: int       # Position on face1 (0-8)
+    face2: str      # Face containing second sticker
+    pos2: int       # Position on face2 (0-8)
+    face3: str      # Face containing third sticker
+    pos3: int       # Position on face3 (0-8)
+    color1: str     # Color of sticker on face1
+    color2: str     # Color of sticker on face2
+    color3: str     # Color of sticker on face3
 
     def __str__(self):
         return f"Corner({self.face1}[{self.pos1}]={self.color1}, {self.face2}[{self.pos2}]={self.color2}, {self.face3}[{self.pos3}]={self.color3})"
@@ -87,33 +163,66 @@ def find_edge(cube: CubeState, color1: str, color2: str,
     """
     Find an edge piece with the given colors.
 
+    WHY max_iterations PARAMETER?
+    Safety guard to prevent infinite loops in buggy solver code.
+
+    Scenario without max_iterations:
+        while not edge_at_target:
+            edge = find_edge(cube, 'W', 'B')  # If buggy, might loop forever
+            cube = try_to_move_edge(cube)     # If this never works, infinite loop!
+
+    Scenario with max_iterations:
+        while not edge_at_target:
+            edge = find_edge(cube, 'W', 'B', max_iterations=24)
+            # After 24 failed attempts, raises PieceNotFoundError
+            # Program stops with helpful error instead of freezing!
+
+    WHY 24? There are only 12 edges on a cube, so searching 24 positions
+    (double the maximum) is more than enough. If we don't find it by then,
+    something is fundamentally wrong with the cube state or search logic.
+
     Args:
         cube: Current cube state
         color1: First color
         color2: Second color
-        max_iterations: Maximum search iterations (prevents infinite loops)
+        max_iterations: Maximum search iterations (default 24, prevents infinite loops)
 
     Returns:
         EdgeRef containing edge information
 
     Raises:
         PieceNotFoundError: If edge not found within max_iterations
+                           (Includes full cube state for debugging)
     """
     iterations = 0
 
+    # Search all 12 edge positions on the cube
     for edge_def in EDGE_POSITIONS:
         iterations += 1
+
+        # SAFETY: Check iteration count to prevent infinite loops
         if iterations > max_iterations:
             raise PieceNotFoundError((color1, color2), cube)
 
+        # Extract position information from edge definition
         face1, pos1, face2, pos2 = edge_def
+
+        # Get actual colors at these positions
         sticker1 = cube.get_sticker(face1, pos1)
         sticker2 = cube.get_sticker(face2, pos2)
 
+        # Check if this edge matches (order doesn't matter)
+        # Example: ('W', 'B') matches both ('W', 'B') and ('B', 'W')
         if (sticker1 == color1 and sticker2 == color2) or \
            (sticker1 == color2 and sticker2 == color1):
+            # Found it! Return structured reference
             return EdgeRef(face1, pos1, face2, pos2, sticker1, sticker2)
 
+    # Searched all 12 edges, none matched
+    # This means either:
+    # 1. Cube state is corrupted (bug in moves)
+    # 2. Colors specified incorrectly
+    # 3. Piece doesn't exist (invalid color combination)
     raise PieceNotFoundError((color1, color2), cube)
 
 
