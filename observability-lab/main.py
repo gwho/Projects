@@ -1,23 +1,39 @@
 """
-Module 1: Observability Primitives & Instrumentation
-====================================================
+Observability Lab: FastAPI + Logfire
+====================================
 
-This implementation demonstrates a baseline telemetry pipeline using FastAPI
-and Logfire. The service endpoint mimics real-world processing behavior to
-generate meaningful trace data.
+A comprehensive hands-on lab demonstrating production-ready observability
+practices using FastAPI and Logfire.
+
+Modules:
+- Module 1: Observability Primitives & Instrumentation
+- Module 2: Database Telemetry & Latency Attribution
 
 Features:
 - Auto-instrumentation with Logfire
 - Structured logging with queryable context
 - Manual spans for granular tracing
-- Simulated latency and error conditions
+- Database query instrumentation
+- N+1 query problem visualization
+- Performance bottleneck identification
 """
 
 import asyncio
 import random
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy.orm import Session
 import logfire
+
+# Import database functionality for Module 2
+from database import (
+    init_db,
+    seed_database,
+    get_db,
+    instrument_database,
+    get_users_with_order_counts_naive,
+    get_users_with_order_counts_optimized
+)
 
 # ============================================================================
 # PHASE 1: Service Skeleton - Initialize with Auto-Instrumentation
@@ -45,11 +61,14 @@ except Exception as e:
         console=ConsoleOptions(colors='auto'),
     )
 
+# Instrument database AFTER logfire is configured
+instrument_database()
+
 # Initialize FastAPI application
 app = FastAPI(
-    title="Observability Lab - Module 1",
-    description="FastAPI + Logfire Observability Primitives",
-    version="1.0.0",
+    title="Observability Lab",
+    description="FastAPI + Logfire: Modules 1 & 2",
+    version="2.0.0",
 )
 
 # Apply Logfire auto-instrumentation to FastAPI
@@ -150,13 +169,122 @@ async def process_order(order_id: str):
     }
 
 
+# ============================================================================
+# Module 2: Database Telemetry & Latency Attribution
+# ============================================================================
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Application startup event handler.
+
+    Initializes the database and seeds it with mock data for testing.
+    This runs once when the application starts.
+    """
+    with logfire.span("startup_initialization"):
+        # Initialize database tables
+        init_db()
+
+        # Seed database with mock data
+        seed_database()
+
+        logfire.info("Application startup complete", modules=["Module 1", "Module 2"])
+
+
+@app.get("/users/analytics")
+async def get_users_analytics_naive(db: Session = Depends(get_db)):
+    """
+    NAIVE IMPLEMENTATION - Demonstrates N+1 Query Problem
+
+    This endpoint intentionally implements the N+1 query anti-pattern
+    to visualize performance issues in traces.
+
+    The Problem:
+        1. Fetches all users in one query
+        2. For EACH user, makes a separate query for order count
+        3. Total queries: 1 + N (where N = number of users)
+
+    What to Look For in Traces:
+        - "Staircase" pattern of database spans
+        - High "Time in Database" vs "Time in App"
+        - 21 separate database query spans (1 + 20 users)
+
+    Returns:
+        List of users with their order counts
+    """
+    with logfire.span("analytics_naive_endpoint") as span:
+        logfire.info("Fetching user analytics", implementation="naive", pattern="N+1")
+
+        # This function makes 21 separate database queries!
+        result = get_users_with_order_counts_naive(db)
+
+        span.set_attribute("users_returned", len(result))
+        span.set_attribute("implementation", "naive")
+
+        return {
+            "implementation": "naive",
+            "warning": "This endpoint uses N+1 queries - check traces!",
+            "total_users": len(result),
+            "users": result
+        }
+
+
+@app.get("/users/analytics/optimized")
+async def get_users_analytics_optimized(db: Session = Depends(get_db)):
+    """
+    OPTIMIZED IMPLEMENTATION - Single Efficient Query
+
+    This endpoint demonstrates the correct way to fetch related data
+    using a single query with JOIN and GROUP BY.
+
+    The Solution:
+        1. Fetches all users WITH order counts in ONE query
+        2. Uses SQL JOIN and aggregation
+        3. Total queries: 1
+
+    What to Look For in Traces:
+        - Single database query span
+        - Much lower total duration
+        - Minimal "Time in Database"
+
+    Returns:
+        List of users with their order counts (same data, better performance)
+    """
+    with logfire.span("analytics_optimized_endpoint") as span:
+        logfire.info("Fetching user analytics", implementation="optimized", pattern="single_query")
+
+        # This function makes only 1 database query!
+        result = get_users_with_order_counts_optimized(db)
+
+        span.set_attribute("users_returned", len(result))
+        span.set_attribute("implementation", "optimized")
+
+        return {
+            "implementation": "optimized",
+            "info": "This endpoint uses a single efficient query",
+            "total_users": len(result),
+            "users": result
+        }
+
+
+# ============================================================================
+# Module 1: Health & Status Endpoints
+# ============================================================================
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
     return {
         "service": "observability-lab-01",
         "status": "healthy",
-        "module": "Module 1: Observability Primitives & Instrumentation"
+        "modules": [
+            "Module 1: Observability Primitives & Instrumentation",
+            "Module 2: Database Telemetry & Latency Attribution"
+        ],
+        "endpoints": {
+            "module_1": ["/process-order/{order_id}"],
+            "module_2": ["/users/analytics", "/users/analytics/optimized"]
+        }
     }
 
 
@@ -166,7 +294,11 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "observability-lab-01",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "modules": {
+            "module_1": "Observability Primitives & Instrumentation",
+            "module_2": "Database Telemetry & Latency Attribution"
+        }
     }
 
 
@@ -179,16 +311,19 @@ if __name__ == "__main__":
 
     print("""
     ╔══════════════════════════════════════════════════════════════╗
-    ║  Observability Lab - Module 1                                ║
-    ║  FastAPI + Logfire Observability Primitives                  ║
+    ║  Observability Lab - Modules 1 & 2                           ║
+    ║  FastAPI + Logfire + SQLAlchemy                              ║
     ║                                                              ║
     ║  Service: observability-lab-01                               ║
     ║  API Documentation: http://localhost:8000/docs               ║
     ║  Logfire Dashboard: https://logfire.pydantic.dev             ║
     ║                                                              ║
-    ║  Test Endpoints:                                             ║
-    ║  GET /process-order/regular-123   (normal execution)         ║
-    ║  GET /process-order/error-test    (simulated crash)          ║
+    ║  Module 1: Observability Primitives                          ║
+    ║  GET /process-order/{order_id}    (tracing & logging)        ║
+    ║                                                              ║
+    ║  Module 2: Database Telemetry & N+1 Problem                  ║
+    ║  GET /users/analytics             (N+1 queries - SLOW)       ║
+    ║  GET /users/analytics/optimized   (1 query - FAST)           ║
     ╚══════════════════════════════════════════════════════════════╝
     """)
 
