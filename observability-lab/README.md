@@ -1,26 +1,23 @@
-# Module 1: Observability Primitives & Instrumentation
+# Observability Lab: FastAPI + Logfire + SQLAlchemy
 
-## Objective
+A comprehensive hands-on lab demonstrating production-ready observability practices using FastAPI, Logfire, and SQLAlchemy.
 
-Establish a baseline telemetry pipeline using FastAPI and Logfire. This implementation includes a service endpoint that mimics real-world processing behavior (latency and logic) to generate meaningful trace data.
+## Overview
+
+This lab consists of two progressive modules that teach critical observability and performance analysis skills:
+
+- **Module 1**: Observability Primitives & Instrumentation
+- **Module 2**: Database Telemetry & Latency Attribution
 
 ## Prerequisites
 
 - Python 3.10+
-- `fastapi`
-- `logfire` (pydantic-logfire)
-- `uvicorn`
+- Basic understanding of:
+  - FastAPI or similar web frameworks
+  - SQL and relational databases
+  - Async/await patterns in Python
 
-## Project Structure
-
-```
-observability-lab/
-├── main.py              # FastAPI application with Logfire instrumentation
-├── requirements.txt     # Python dependencies
-└── README.md           # This file
-```
-
-## Setup Instructions
+## Quick Start
 
 ### 1. Install Dependencies
 
@@ -29,15 +26,15 @@ cd observability-lab
 pip install -r requirements.txt
 ```
 
-### 2. Configure Logfire
+### 2. Configure Logfire (Optional)
 
-Before running the application, you need to authenticate with Logfire:
+For full trace visualization in the dashboard:
 
 ```bash
 logfire auth
 ```
 
-This will open a browser window for authentication. Follow the prompts to authenticate your Logfire account.
+**Note**: The application works without authentication in console-only mode, which is perfect for learning!
 
 ### 3. Run the Application
 
@@ -45,63 +42,246 @@ This will open a browser window for authentication. Follow the prompts to authen
 python main.py
 ```
 
-Or with uvicorn directly:
-
-```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
 The application will be available at:
-- API: http://localhost:8000
-- API Documentation: http://localhost:8000/docs
-- Logfire Dashboard: https://logfire.pydantic.dev
+- **API**: http://localhost:8000
+- **API Documentation**: http://localhost:8000/docs
+- **Logfire Dashboard**: https://logfire.pydantic.dev (when authenticated)
 
-## Implementation Details
+## Project Structure
 
-### Phase 1: Service Skeleton
-
-✅ **Initialized FastAPI Application**: Standard app entry point with auto-instrumentation
-
-✅ **Configured Logfire**:
-- Service name explicitly set to `observability-lab-01`
-- Applied `logfire.instrument_fastapi(app)` hook for automatic HTTP tracing
-
-### Phase 2: Structural Depth
-
-✅ **Created Endpoint**: `GET /process-order/{order_id}`
-
-This endpoint performs the following instrumented steps:
-
-1. **Input Validation**: Logs incoming `order_id` using structured arguments
-   ```python
-   logfire.info('Processing order', order_id=order_id)
-   ```
-   - Uses structured logging (NOT string formatting)
-   - Ensures data is queryable in the dashboard
-
-2. **Simulated Work**:
-   - Creates a manual span named `verify_inventory`
-   - Uses `asyncio.sleep()` to simulate database lookup (0.1s - 0.5s randomized)
-   - Logs a warning if sleep time exceeds 0.4s (simulating slow query detection)
-   - Attaches metadata to the span for observability
-
-### Phase 3: Verification Challenge
-
-✅ **The Bug**: Conditional failure for testing
-
-- When `order_id="error-test"`, raises `HTTPException(status_code=500, detail="Simulated Crash")`
-- Allows testing error trace propagation
-
-## Testing & Verification Tasks
-
-### Task 1: Regular Order Processing
-
-**Request:**
-```bash
-curl http://localhost:8000/process-order/regular-123
+```
+observability-lab/
+├── main.py              # FastAPI application (Modules 1 & 2)
+├── database.py          # SQLAlchemy models and queries (Module 2)
+├── requirements.txt     # Python dependencies
+├── README.md           # This file (overview)
+├── MODULE2.md          # Module 2 detailed documentation
+├── TEST_RESULTS.md     # Module 1 test results
+└── PR_DESCRIPTION.md   # PR template
 ```
 
-**Expected Response:**
+---
+
+## Module 1: Observability Primitives & Instrumentation
+
+### What You'll Learn
+
+- Auto-instrumentation with Logfire
+- Structured logging vs string formatting
+- Manual span creation for granular tracing
+- Performance monitoring with thresholds
+- Error tracking and exception correlation
+
+### Key Endpoints
+
+#### `GET /process-order/{order_id}`
+
+Demonstrates:
+- Structured logging with queryable attributes
+- Manual span creation (`verify_inventory`)
+- Simulated async work with random latency (0.1s-0.5s)
+- Warning logs for slow operations (> 0.4s)
+- Conditional error injection for testing
+
+**Example Usage:**
+
+```bash
+# Regular processing
+curl http://localhost:8000/process-order/regular-123
+
+# Simulated error
+curl http://localhost:8000/process-order/error-test
+```
+
+**What to Look For in Traces:**
+- Total request duration
+- `verify_inventory` span duration
+- Slow query warnings (when duration > 0.4s)
+- Exception details for error cases
+
+### Implementation Highlights
+
+```python
+# Structured logging - data is queryable!
+logfire.info("Processing order", order_id=order_id)
+
+# Manual span for granular tracing
+with logfire.span("verify_inventory") as span:
+    span.set_attribute("sleep_duration_seconds", sleep_time)
+    await asyncio.sleep(sleep_time)
+
+    # Performance monitoring
+    if sleep_time > 0.4:
+        logfire.warn("Slow query detected", duration_seconds=sleep_time)
+```
+
+### Full Documentation
+
+See [TEST_RESULTS.md](TEST_RESULTS.md) for detailed test results and verification.
+
+---
+
+## Module 2: Database Telemetry & Latency Attribution
+
+### What You'll Learn
+
+- **N+1 Query Problem**: The most common performance bug
+- **Latency Attribution**: App time vs Database time
+- **Query Optimization**: Using JOINs effectively
+- **Trace Analysis**: Reading waterfall diagrams
+- **Performance Debugging**: Finding real bottlenecks
+
+### The Problem: N+1 Queries
+
+A classic anti-pattern that's easy to write but terrible for performance:
+
+```python
+# ❌ BAD: Makes 21 queries (1 + 20)
+users = db.query(User).all()  # Query 1
+for user in users:  # Loop 20 times
+    count = db.query(Order).filter(Order.user_id == user.id).count()  # 20 queries!
+```
+
+### The Solution: Single Query with JOIN
+
+```python
+# ✅ GOOD: Makes 1 query
+db.query(User, func.count(Order.id))\
+  .outerjoin(Order)\
+  .group_by(User.id)\
+  .all()  # 1 query total!
+```
+
+### Key Endpoints
+
+#### `GET /users/analytics` (Naive Implementation)
+
+**Purpose**: Intentionally demonstrates the N+1 problem
+
+**Performance**:
+- **Queries**: 21 (1 + 20 users)
+- **Duration**: ~50ms
+- **Database Time**: ~42ms (88% of total)
+
+**What to Look For in Traces**:
+- "Staircase" pattern of 21 sequential database spans
+- High database time percentage
+- N+1 warning in logs
+
+#### `GET /users/analytics/optimized` (Optimized Implementation)
+
+**Purpose**: Shows the correct approach with JOIN
+
+**Performance**:
+- **Queries**: 1
+- **Duration**: ~8ms
+- **Database Time**: ~3ms (37% of total)
+
+**What to Look For in Traces**:
+- Single database span
+- Much lower total duration
+- Balanced app vs database time
+
+### Performance Comparison
+
+| Metric | Naive (N+1) | Optimized | Improvement |
+|--------|-------------|-----------|-------------|
+| Total Queries | 21 | 1 | **21× fewer** |
+| Database Time | ~42ms | ~3ms | **14× faster** |
+| Total Time | ~50ms | ~8ms | **6× faster** |
+
+**With 1000 users**: Naive would make **1001 queries**, Optimized still makes **1 query**!
+
+### Example Usage
+
+```bash
+# Test the N+1 problem
+curl http://localhost:8000/users/analytics | python -m json.tool
+
+# Test the optimized version
+curl http://localhost:8000/users/analytics/optimized | python -m json.tool
+```
+
+Both return the same data—only the performance differs!
+
+### Full Documentation
+
+See [MODULE2.md](MODULE2.md) for comprehensive documentation, exercises, and troubleshooting.
+
+---
+
+## Database Schema
+
+```sql
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    username VARCHAR UNIQUE NOT NULL,
+    email VARCHAR UNIQUE NOT NULL
+);
+
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    product_name VARCHAR NOT NULL,
+    quantity INTEGER DEFAULT 1,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+```
+
+**Seed Data**:
+- 20 users (`user_01` through `user_20`)
+- 40-100 orders (2-5 per user)
+
+---
+
+## API Reference
+
+### Health & Status
+
+#### `GET /`
+Root endpoint with service information
+
+**Response:**
+```json
+{
+  "service": "observability-lab-01",
+  "status": "healthy",
+  "modules": [
+    "Module 1: Observability Primitives & Instrumentation",
+    "Module 2: Database Telemetry & Latency Attribution"
+  ],
+  "endpoints": {
+    "module_1": ["/process-order/{order_id}"],
+    "module_2": ["/users/analytics", "/users/analytics/optimized"]
+  }
+}
+```
+
+#### `GET /health`
+Detailed health check
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "service": "observability-lab-01",
+  "version": "2.0.0",
+  "modules": {
+    "module_1": "Observability Primitives & Instrumentation",
+    "module_2": "Database Telemetry & Latency Attribution"
+  }
+}
+```
+
+### Module 1 Endpoints
+
+#### `GET /process-order/{order_id}`
+Process an order with instrumented tracing
+
+**Parameters:**
+- `order_id` (path): Order identifier
+
+**Response:**
 ```json
 {
   "status": "success",
@@ -111,116 +291,197 @@ curl http://localhost:8000/process-order/regular-123
 }
 ```
 
-**Verification Steps:**
-1. Open Logfire Dashboard: https://logfire.pydantic.dev
-2. Navigate to your project: `observability-lab-01`
-3. Find the trace for `GET /process-order/regular-123`
-4. Examine the trace waterfall:
-   - Identify the **total request duration** (root span)
-   - Identify the **verify_inventory span duration**
-   - Compare the two durations
-   - Verify structured attributes are present (order_id, sleep_duration_seconds)
+**Special Cases:**
+- `order_id="error-test"`: Returns 500 error for testing
 
-**What to Look For:**
-- The `verify_inventory` span should be nested within the HTTP request span
-- Span attributes should include `order_id` and `sleep_duration_seconds`
-- If the sleep time was > 0.4s, you should see a warning log entry
+### Module 2 Endpoints
 
-### Task 2: Simulated Error Case
+#### `GET /users/analytics`
+Get user analytics with N+1 query pattern (slow)
 
-**Request:**
-```bash
-curl http://localhost:8000/process-order/error-test
-```
-
-**Expected Response:**
+**Response:**
 ```json
 {
-  "detail": "Simulated Crash"
+  "implementation": "naive",
+  "warning": "This endpoint uses N+1 queries - check traces!",
+  "total_users": 20,
+  "users": [
+    {
+      "id": 1,
+      "username": "user_01",
+      "email": "user01@example.com",
+      "order_count": 3
+    }
+  ]
 }
 ```
-(HTTP Status: 500)
 
-**Verification Steps:**
-1. Open Logfire Dashboard
-2. Navigate to your project: `observability-lab-01`
-3. Find the trace for `GET /process-order/error-test`
-4. Examine the trace details:
-   - Locate the **exception stack trace** within the span details
-   - Confirm the 500 error is correctly associated with the root span
-   - Verify the error log entry is present with structured attributes
+#### `GET /users/analytics/optimized`
+Get user analytics with optimized query (fast)
 
-**What to Look For:**
-- The root span should be marked as an error (usually highlighted in red)
-- The exception details should include the stack trace
-- The error log should contain `order_id="error-test"` and `error_type="simulated_crash"`
-- The span should show the `HTTPException` was raised
-
-## Key Observability Concepts Demonstrated
-
-1. **Auto-Instrumentation**: FastAPI requests are automatically traced
-2. **Structured Logging**: All logs use key-value pairs for queryability
-3. **Manual Spans**: Fine-grained tracing of specific operations
-4. **Span Attributes**: Attaching metadata to spans for filtering and analysis
-5. **Performance Monitoring**: Detecting and logging slow operations
-6. **Error Tracking**: Exception propagation and error correlation
-
-## Additional Endpoints
-
-### Health Check
-```bash
-curl http://localhost:8000/health
+**Response:**
+```json
+{
+  "implementation": "optimized",
+  "info": "This endpoint uses a single efficient query",
+  "total_users": 20,
+  "users": [
+    {
+      "id": 1,
+      "username": "user_01",
+      "email": "user01@example.com",
+      "order_count": 3
+    }
+  ]
+}
 ```
 
-### Root Endpoint
-```bash
-curl http://localhost:8000/
+---
+
+## Key Concepts
+
+### Structured Logging
+
+**❌ String Formatting (Bad)**:
+```python
+logfire.info(f"Processing order {order_id}")  # Not queryable!
 ```
+
+**✅ Structured Arguments (Good)**:
+```python
+logfire.info("Processing order", order_id=order_id)  # Queryable!
+```
+
+**Why**: Structured logs allow filtering, searching, and aggregation in the dashboard.
+
+### Manual Spans
+
+Create spans to measure specific operations:
+
+```python
+with logfire.span("operation_name") as span:
+    span.set_attribute("key", "value")
+    # do work
+```
+
+**Use Cases**:
+- Database queries
+- External API calls
+- Complex computations
+- File I/O operations
+
+### Latency Attribution
+
+**Question**: Is the app slow or is the database slow?
+
+**Answer from Traces**:
+```
+Total Request Time: 50ms
+├─ App Logic: 8ms (16%)
+└─ Database Queries: 42ms (84%)
+```
+
+**Conclusion**: Database is the bottleneck → optimize queries!
+
+### N+1 Query Problem
+
+**Pattern**: Making N+1 queries when 1 would suffice
+
+**Example**:
+```python
+# 1 query to get users
+users = db.query(User).all()
+
+# N queries to get related data
+for user in users:  # N+1 problem!
+    orders = db.query(Order).filter(Order.user_id == user.id).all()
+```
+
+**Solution**: Use JOIN
+```python
+# 1 query total
+users = db.query(User).options(joinedload(User.orders)).all()
+```
+
+**How to Spot**: Look for "staircase" patterns in trace waterfalls
+
+---
 
 ## Troubleshooting
 
-### Logfire Authentication Issues
+### Issue: "Logfire not authenticated"
 
-If you encounter authentication issues:
+**Solution**: This is normal! The app works in console-only mode.
 
+To use the dashboard:
 ```bash
-# Re-authenticate
 logfire auth
-
-# Check configuration
-logfire whoami
+python main.py
 ```
 
-### Port Already in Use
+### Issue: "Database already exists"
 
-If port 8000 is already in use:
-
+**Solution**: Delete and recreate:
 ```bash
-# Run on a different port
-uvicorn main:app --reload --host 0.0.0.0 --port 8001
+rm observability_lab.db
+python main.py
 ```
 
-### Dependencies Not Found
+### Issue: "Can't see database queries in traces"
 
-Ensure you're in the correct directory and have installed all dependencies:
+**Cause**: Running in console-only mode (no Logfire auth)
 
+**Solution**: Either:
+1. Authenticate with `logfire auth` to see full traces
+2. Check console output for structured logs
+
+### Issue: "Port 8000 already in use"
+
+**Solution**: Change the port:
 ```bash
-cd observability-lab
-pip install -r requirements.txt
+uvicorn main:app --port 8001
 ```
 
-## Next Steps
+---
 
-After completing this module, you should be able to:
+## Learning Path
 
-✅ Navigate the Logfire dashboard to find specific traces
-✅ Understand the difference between auto-instrumented and manual spans
-✅ Identify performance bottlenecks using span durations
-✅ Correlate errors with their root causes using trace context
-✅ Use structured logging for better observability
+1. **Start with Module 1**
+   - Understand structured logging
+   - Learn manual span creation
+   - Practice trace analysis
 
-## Resources
+2. **Progress to Module 2**
+   - Identify N+1 problems in traces
+   - Learn to optimize database queries
+   - Master latency attribution
+
+3. **Apply to Your Projects**
+   - Add instrumentation to your apps
+   - Find performance bottlenecks
+   - Optimize based on data, not guesses
+
+---
+
+## Additional Resources
 
 - [Logfire Documentation](https://docs.pydantic.dev/logfire/)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
+- [SQLAlchemy Documentation](https://docs.sqlalchemy.org/)
 - [OpenTelemetry Concepts](https://opentelemetry.io/docs/concepts/)
+
+---
+
+## Summary
+
+This lab teaches you to:
+
+✅ Instrument applications with minimal code changes
+✅ Use structured logging for better observability
+✅ Create manual spans for granular tracing
+✅ Identify the N+1 query problem in traces
+✅ Optimize database queries using trace data
+✅ Attribute latency to the right components
+✅ Make data-driven performance decisions
+
+**Remember**: Traces don't lie. Always measure before optimizing!
